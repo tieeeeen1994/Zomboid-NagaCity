@@ -6,6 +6,80 @@ map folder in `common/media/maps/Naga City, PH/` (it must be under `common`, see
 the map files is `tools/` (Python, not uploaded). General engine findings go in
 `~/Zomboid/Workshop/ZomboidFixesB42/CLAUDE.md`; this file holds the reasoning behind this mod and the map formats.
 
+## Where we are (2026-10-04) — read this first
+
+**Direction (the user's, in order of how they arrived):**
+1. Roads the Zomboid way: cardinal / 45-degree, highways completely straight, nothing jagged anywhere (walks, drives,
+   outlines too). Done in `roads.py` / `generate.py`.
+2. Interiors: vanilla-style, full, fun; accuracy only outside; outsides may be resized to fit the interiors.
+3. **The real goal: street-level nostalgia.** "What we need is for a Naga citizen to go down a named road and feel
+   actual Naga City in isometric view, even if the road is curved and straightened." Building *positions* along named
+   roads (which road, which side, order, setback) matter most; overall map accuracy does not.
+4. **Buildings are hand-drawn by Claude** ("you draw them") as designs that suit Zomboid tiles, reviewed by the user
+   from renders. Procedural exteriors (Ateneo v1/v2) looked generic/ugly — do not go back to rule-based facades.
+5. Pilot street: **Panganiban Drive**, end to end, before anything else. Generic vanilla signs / shop interiors are OK
+   for now (no custom brand art yet).
+
+**Pilot status:** OSM inventory done (`tools/out/panganiban_strip.png`, data in `out/panganiban_items.json`):
+Panganiban Drive = OSM ways named exactly "Panganiban Drive" (not J. Panganiban Street), main run 1,678 m from Elias
+Angeles St (8194,19493) east to Juan Miranda Ave (9855,19729); 251 OSM buildings within 35 m, 66 named places.
+Cross streets (m from Elias Angeles): Dinaga / Peñafrancia Ave 81, Riverside 168, Blumentritt 260, Lerma /
+Misericordia 317, Ninoy and Cory Ave 506, Palomares 516, SM City Naga Road 689, Isarog 761, Ramon Felipe Jr. 836,
+Caceres 917, Seton Rd 977, Mayon Ave 1044, Sampaguita 1176, Hospital Loop Rd 1376, Evangelical 1441, Juan Miranda
+1527. Named places west to east: Mercury Drug, Southstar, Naga Optical, Naga Garden, RCBC, Chinabank, Maybank,
+Watsons, Security Bank, jeepney station (to Concepcion / Del Rosario) ~91 m south side, PSBank, Worldtech, 7-Eleven,
+Beanbag Coffee, PBCOM, Petron ~291, CheckOut, Spring Star Siopao, Shell ~381, Motortrade, Julie's Bakeshop,
+Jollibee ~525 (2 floors), St. John Hospital ~573, LDS church, DBP, Petron ~866, BDO, PNB, Amanse Children's Clinic,
+NIA Regional Office ~1156, BPI, Producers Bank, Metro Gaisano / Super Metro ~1457 (6,500 m2), UnionBank, Landbank,
+Naga City Police Station 2 at the east end. The user has not corrected the list yet (may later).
+
+**Done for the pilot:** the design system (`tools/designs.py`, `tools/design_preview.py`) and design 1,
+`SHOPHOUSE_8` (2-floor shophouse, 8 x 14: glass shopfront + glass door, shop, back stair hall + storeroom; upstairs
+kitchen, bathroom, bedroom, front living room). The user: "this is honestly better", but flagged a clock on a window
+and certificates hanging in the air → fixed with wall-hung item filtering (below); re-render not yet reviewed.
+
+**Next:** re-check the shophouse renders; ask about look (side walls, flat roof, paler paint, full glass front vs
+roll-up door). Then designs for: 3-floor bank / office with glass ground floor, gas station (canopy + pumps),
+fast-food restaurant (Jollibee), hospital, NIA office, mall (Metro Gaisano), police station, jeepney station.
+Then a street-anchored placer: each OSM building along the road → its along-distance, side and setback mapped onto
+the straightened in-game Panganiban Drive (fraction of length along the schematized path; sidewalk then setback),
+design chosen by OSM tags / size, front facing the road, 1-tile gaps between neighbours (adjacent buildings would put
+two walls on one edge). Then generate and show renders of the first 250 m.
+
+**Open issues:** the same render's bathroom has a shower head but no glass panes: multi-part fixtures lose pieces
+when a vanilla room is copied — parts on squares outside the room rect are never collected (`build_room_library.py`
+keeps only the rect), and pane-like pieces may be dropped by the hung-item filter (it demands a plain wall where the
+pane *is* the wall). Fix before more copying: collect a room's S / E boundary squares too, never filter wall-like
+fixtures, or keep whole fixtures together. the user found (2026-10-04, shophouse upstairs render) a room with a blank window and a door with
+no frame — not yet diagnosed: every room's wall set has all eight pieces (checked), so check the wall-set numbering
+per family (render `walls_interior_bathroom_01` / `walls_interior_house_03` pieces large) and the iso renderer's draw
+order before trusting renders; the user is losing confidence ("I don't think we can do this. it might be too complex
+for you") — verify every render square by square before sending. whiteboards / chalkboards (`location_business_office_generic_01_64..67`) carry no `attached*` flag,
+so they are not filtered (check their `Facing` property instead); a copied vanilla room smaller than the drawn room
+leaves space; branded signs need custom art (later); Ateneo still uses the procedural layout (`layout.py`) and should
+be redrawn with designs later; the NagaCity repo has **no commits yet** (offer one).
+
+## Prefabs: copying whole vanilla buildings (2026-10-04, current approach)
+
+After the hand-drawn designs kept breaking vanilla pieces (blank window frames, a door with no frame, a shower head
+without its glass panes, an oven in front of a door), the user chose: **copy whole vanilla buildings with small
+alterations** ("I like the idea of copying vanilla buildings with small alterations"). `tools/prefabs.py`:
+`extract((cx, cy), building index, margin)` copies every square of a building's rooms on every level plus a border
+(border squares keep objects, not ground; other buildings' room squares skipped); `entrances(p)` = sides with outside
+doors (buildings cannot be turned: sprites face fixed ways, so pick one whose front faces the street);
+`paste(p, canvas, ox, oy)`. Small safe alterations planned: exterior paint swap, room names (loot), signs, a few
+furniture pieces. No structural edits.
+Proof (`tools/out/proof_*.png`, original left, copy right): pharmacy 46_26 #32 (Pharmahug) and bank 41_37 #45 copy
+identically; the gas station 46_26 #36 (border 14) comes with its whole forecourt (asphalt, pumps, lines, cones, fence).
+How the border is kept: its ground comes along (the user asked "why is it on top of grass?" when it did not), except
+squares inside a vanilla **road polygon** of Knox County's worldmap.xml (`vanilla_road_squares`, cached
+`data/vanilla_roads.pickle`), where asphalt / lines / curbs / trees are dropped — lots and roads use the same asphalt,
+only the world map tells them apart. Squares of other buildings' rooms are skipped, and squares within one square of
+them (and their roofs above) too, **except** on our own one-square rim (else the bank lost its south / east walls,
+which sit on squares outside its rooms). A neighbour's yard room can still cut off planting next to ours (the bank's
+flower bed). Waiting for the user's look and an in-game test, then: fill the first
+250 m of Panganiban Drive with matched vanilla buildings (type by OSM tags, size, entrance facing the street).
+
 ## Status
 
 Phases 1-3 done, phase 3 waiting for the user's in-game test. The lot writers rewrite 124 sampled vanilla and Raven
@@ -202,6 +276,32 @@ From the 48_8 university (rooms classroom / universitylibrary / universityoffice
   the cells over the ground, and the claimed squares get no generic roads, town biome and their own chunk bits
   (ROOM, WALL_N, WALL_W).
 
+## Designs (`tools/designs.py`) — hand-drawn buildings
+
+- A `Design` = name, notes, `rooms` (letter -> vanilla room name, `"{use}"` = the business: pharmacy, bank...),
+  `shop` letter, and one dict per floor: `rows` (text grid, north row first, street front at the **bottom / south**),
+  `doors` [(x, y, edge N|S|E|W, optional "glass")], `windows` [(x, y, edge)], `stairs` [(x, y, climb dir)] = top
+  square (west of the two columns) as drawn. Walls go wherever letters differ.
+- `place(design, ox, oy, facing, use, exterior=None, seed)` turns it: S as drawn, N mirrored, E / W rotated; edges
+  convert to buildkit's N/W form (S edge = N edge of the square below, E = W edge of the square right). Stairs that
+  would climb S / E after turning are laid N / W in the same footprint (stair bays must be open at both ends). Each
+  (letter, floor) gets its own one-character room key. The ground floor's south edges in the shop room become the
+  glass shopfront `walls_commercial_01` row 80 (80 W, 81 N, 82 corner, 83 post, 90 / 91 door frames) with glass door
+  `fixtures_doors_01_48` (W) / `_49` (N); other vanilla shop doors: `_52/53/56/57`, double `fixtures_doors_02_40/41/44/45`.
+  Upper floors: a random `PAINT` exterior set. `fixed_windows` = only the drawn windows.
+- Rooms get the best-fitting vanilla room of their name (top 5, seeded) and its floor and wall set; corridors /
+  stair halls (`hall`) get no furniture.
+- buildkit additions: `edge_walls` (per-edge WallSet override), `door_tiles` (per-edge door object), `fixed_windows`,
+  west-climbing stairs `(z, x_top, y, "W")` = `fixtures_stairs_01_18` (top, west) 17, 16, two rows deep; stair holes
+  are now in absolute coordinates (they were local before, so floors were laid over stairwells).
+- Wall-hung items: `pzmap/tiledefs.py` reads `attachedN/W/E/S/NW/SE` from `media/newtiledefinitions.tiles.txt`
+  (6,681 sprites; cached `data/attached.json`). `Building.draw` keeps a hung tile only if every edge it needs is a
+  plain wall (no window, door or open air); the per-room window plan skips edges that hung items need.
+- `Building.draw` also drops furniture on the squares either side of every door, on stairs and at a stair's two ends
+  (a vanilla kitchen put its stove in front of the kitchen door: "you put an oven in front of the door").
+- `design_preview.py NAME [use] [--z=N] [--facing=SNEW]` renders one design on grass with a road in front
+  (`render_canvas` draws a Canvas directly, no map files).
+
 ## Landmarks
 
 - **Ateneo de Naga University**, the college campus on Ateneo Avenue (OSM way 222268858; the user asked for it
@@ -214,6 +314,11 @@ From the 48_8 university (rooms classroom / universitylibrary / universityoffice
   the first campus walk): the turned outline squared into rectangles (`wings_of`, sides >= 16, 97 %), lawn inside,
   parking and the tennis court as their turned bounding rectangles, OSM walks (2 wide) and service roads (6 wide)
   straightened by `roads.schematize` with `MIN_DIAG` = inf (square corners only) and laid as straight strips. 28 buildings, 379 rooms (187 classrooms).
+- Ateneo v2 (current): buildings from `layout.py` (vanilla-sized rooms, see Decisions), windows per room
+  (`buildkit._plan_windows`: ~1 per 5 squares of a room's outside wall, at most 1 for restrooms / storage / janitor,
+  corridors 1 per 8; the first rule put one on every other square — "why does every wall have a window?"). The user
+  then found the result still generic ("it looks like this will be tough for you") → hand-drawn designs instead.
+  Labelled map: `tools/out/ateneo_labels.png`. Xavier Hall = (8212, 18727) 32 x 28, offices (OSM has no use for it).
 - Footprints filling less than 80 % of their box (Administration U, Arrupe L, Physical Plant) are split into
   rectangular wings (`wings_of`, largest rectangle first, sides >= 8, until 85 % is covered); wings share one plan,
   touching corridors get a door, the first wing has the stair bay.
@@ -258,6 +363,12 @@ From the 48_8 university (rooms classroom / universitylibrary / universityoffice
 - `media/lua/server/NagaCity_RavenCreekLink.lua`: paves the gap (see Placement).
 - Decompiling: classes come from `projectzomboid.jar` in the game folder (the loose `zombie/` folder there is
   PZ_Optimization's overrides); the bundled JRE is `jre64/bin/java.exe`; Vineflower as in the ZomboidFixesB42 notes.
+
+- `tools/build_room_library.py` -> `data/vanilla_rooms.json` (vanilla rooms with furniture, floor, wall set);
+  `tools/rooms.py` (`furnish`, `NO_FURNITURE`, `NO_REPEAT`); `tools/layout.py` (vanilla-sized corridor / hall /
+  single-room buildings, used by Ateneo v2); `tools/designs.py` + `tools/design_preview.py` (hand-drawn designs);
+  `tools/pzmap/tiledefs.py` (wall-hung sprites); `tools/landmarks/` (`ateneo.py`, `merge.py`, `__init__.build_all`).
+- Renders for the user live in `tools/out/` (sent with SendUserFile; VS Code links also work).
 
 ## Phases
 

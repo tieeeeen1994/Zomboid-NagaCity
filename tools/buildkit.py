@@ -18,10 +18,17 @@ Vanilla's rules (checked on the 48_8 university, the 39_49 school and the 41_37 
   `fixtures_doors_01` (0 W / 1 N).
 - Stairs climb north: bottom 24, middle 25, top 26 (`fixtures_stairs_01`), two wide; the floor above them is left
   open and the square north of the top is where they arrive.
-- Flat roof: `roofs_04_54` over every square of the floor above the top floor."""
+- Flat roof: `roofs_04_54` over every square of the floor above the top floor.
+- Wall-hung furniture (clocks, certificates, whiteboards: sprites with `attachedN / W / E / S / NW / SE` in the tile
+  definitions, pzmap/tiledefs.py) is kept only where its edge has a plain wall in this building; windows avoid the
+  edges such items need. (Copied vanilla rooms of another size otherwise left certificates hanging in the air and a
+  clock on a window, the user's catch 2026-10-04.)
+- Nothing is placed on the squares either side of a door, on stairs, or at a stair's two ends (a vanilla kitchen
+  put its stove in front of the kitchen door, the user's catch 2026-10-04)."""
 from collections import defaultdict
 
 from pzmap.chunkdata import ROOM, WALL_N, WALL_W
+from pzmap.tiledefs import attached
 
 W, N = "W", "N"
 
@@ -42,6 +49,7 @@ DETAIL = WallSet("walls_interior_detailing_01", 2, 0)
 WINDOW = {W: "fixtures_windows_01_16", N: "fixtures_windows_01_17"}
 DOOR = {W: "fixtures_doors_01_0", N: "fixtures_doors_01_1"}
 STAIRS = ("fixtures_stairs_01_26", "fixtures_stairs_01_25", "fixtures_stairs_01_24")  # top (north) to bottom
+STAIRS_W = ("fixtures_stairs_01_18", "fixtures_stairs_01_17", "fixtures_stairs_01_16")  # top (west) to bottom
 FLAT_ROOF = "roofs_04_54"
 
 
@@ -98,7 +106,10 @@ class Building:
         self.legend = {}           # key -> RoomType
         self.doors = set()         # (z, x, y, W|N) local
         self.no_window = set()     # (z, x, y, W|N) local edges kept blank
-        self.stairs = []           # (z, x, y_top) local, two wide
+        self.stairs = []           # (z, x, y_top) north-climbing, or (z, x_top, y, "W") west-climbing; two wide
+        self.edge_walls = {}       # (z, x, y, W|N) -> WallSet replacing the usual set on that edge (shopfronts)
+        self.door_tiles = {}       # (z, x, y, W|N) -> door object replacing the plain door (glass shop doors)
+        self.fixed_windows = None  # set of (z, x, y, W|N): hand-placed windows instead of the per-room plan
         self.furniture = []        # (z, x, y, [tiles]) local
         self.furnished = set()     # (z, x, y) local squares with furniture: no window cut into their walls
         self._windows = {}         # z -> planned window edges
@@ -114,11 +125,34 @@ class Building:
         k = rows[y][x]
         return None if k == "." else k
 
+    def _hung_edges(self, z, x, y, tile):
+        """The wall edges (buildkit form) a wall-hung tile on local square (x, y) needs, or [] for free-standing."""
+        a = attached().get(tile)
+        if not a:
+            return []
+        out = []
+        if "N" in a:
+            out.append((x, y, N))
+        if "W" in a:
+            out.append((x, y, W))
+        if "S" in a:
+            out.append((x, y + 1, N))
+        if "E" in a:
+            out.append((x + 1, y, W))
+        return out
+
     def draw(self, canvas):
+        self._hung = {(z,) + e for z, x, y, tiles in self.furniture for t in tiles for e in self._hung_edges(z, x, y, t)}
         room_index = {}
         first_room = len(canvas.rooms)
         top = max(self.floors)
-        stair_holes = {(z + 1, x + dx, y + dy) for z, x, y in self.stairs for dx in (0, 1) for dy in (0, 1, 2)}
+        stair_holes = set()
+        for st in self.stairs:
+            z, x, y = st[:3]
+            if len(st) > 3 and st[3] == "W":
+                stair_holes |= {(z + 1, self.ox + x + dx, self.oy + y + dy) for dx in (0, 1, 2) for dy in (0, 1)}
+            else:
+                stair_holes |= {(z + 1, self.ox + x + dx, self.oy + y + dy) for dx in (0, 1) for dy in (0, 1, 2)}
         for z, rows in sorted(self.floors.items()):
             h, w = len(rows), max(len(r) for r in rows)
             # rooms: one room def per connected key region would be nicer; one per key and level is what vanilla's
@@ -152,12 +186,37 @@ class Building:
                     for x in range(w):
                         if self.key(z, x, y) is not None:
                             canvas.add(self.ox + x, self.oy + y, z + 1, [FLAT_ROOF])
-        for z, x, y in self.stairs:
-            for dx in (0, 1):
-                for dy, tile in enumerate(STAIRS):
-                    canvas.add(self.ox + x + dx, self.oy + y + dy, z, [tile])
+        for st in self.stairs:
+            z, x, y = st[:3]
+            if len(st) > 3 and st[3] == "W":
+                for dy in (0, 1):
+                    for dx, tile in enumerate(STAIRS_W):
+                        canvas.add(self.ox + x + dx, self.oy + y + dy, z, [tile])
+            else:
+                for dx in (0, 1):
+                    for dy, tile in enumerate(STAIRS):
+                        canvas.add(self.ox + x + dx, self.oy + y + dy, z, [tile])
+        blocked = set()  # squares either side of every door, and stairs with their two ends: nothing stands there
+        for z, x, y, side in self.doors:
+            blocked |= {(z, x, y), (z, x, y - 1) if side == N else (z, x - 1, y)}
+        for st in self.stairs:
+            z, x, y = st[:3]
+            if len(st) > 3 and st[3] == "W":
+                blocked |= {(z, x + dx, y + dy) for dx in (-1, 0, 1, 2, 3) for dy in (0, 1)}
+                blocked |= {(z + 1, x - 1, y + dy) for dy in (0, 1)}
+            else:
+                blocked |= {(z, x + dx, y + dy) for dx in (0, 1) for dy in (-1, 0, 1, 2, 3)}
+                blocked |= {(z + 1, x + dx, y - 1) for dx in (0, 1)}
         for z, x, y, tiles in self.furniture:
-            canvas.add(self.ox + x, self.oy + y, z, tiles)
+            if (z, x, y) in blocked:
+                continue
+            keep = []
+            for t in tiles:
+                edges = self._hung_edges(z, x, y, t)
+                if all(self._plain_wall(z, ex, ey, side) for ex, ey, side in edges):
+                    keep.append(t)
+            if keep:
+                canvas.add(self.ox + x, self.oy + y, z, keep)
         canvas.buildings.append(list(range(first_room, len(canvas.rooms))))
 
     def _edge(self, z, x, y, side):
@@ -179,7 +238,13 @@ class Building:
         inside = rt_here is not None and not rt_here.outdoor
         return kind, inside, rt_here if inside else None
 
+    def _plain_wall(self, z, x, y, side):
+        e = self._edge(z, x, y, side)
+        return e is not None and e[0] == ""
+
     def _window_here(self, z, x, y, side, rt_here, rt_there):
+        if self.fixed_windows is not None:
+            return (z, x, y, side) in self.fixed_windows
         if z not in self._windows:
             self._windows[z] = self._plan_windows(z)
         return (x, y, side) in self._windows[z] and (z, x, y, side) not in self.no_window
@@ -236,7 +301,7 @@ class Building:
                             continue
                         x, y = (p, line) if side == N else (line, p)
                         room = (x, y) if where == "in" else ((x, y - 1) if side == N else (x - 1, y))
-                        if (z, x, y, side) in self.doors or (z,) + room in self.furnished:
+                        if (z, x, y, side) in self.doors or (z, x, y, side) in getattr(self, "_hung", ()):
                             continue
                         out.add((x, y, side))
                         break
@@ -246,8 +311,9 @@ class Building:
         n, w = self._edge(z, x, y, N), self._edge(z, x, y, W)
         ax, ay = self.ox + x, self.oy + y
         tiles = []
-        if n and w and not n[0] and not w[0] and n[1] == w[1]:
-            ws = n[2].walls if n[1] else self.exterior
+        same_set = self.edge_walls.get((z, x, y, N)) is self.edge_walls.get((z, x, y, W))
+        if n and w and not n[0] and not w[0] and n[1] == w[1] and same_set:
+            ws = self.edge_walls.get((z, x, y, N)) or (n[2].walls if n[1] else self.exterior)
             tiles.append(ws.tile("NW"))
             if n[1] and n[2].detail:
                 tiles.append(DETAIL.tile("NW"))
@@ -256,13 +322,14 @@ class Building:
                 if not e:
                     continue
                 kind, inside, rt = e
-                ws = rt.walls if inside else self.exterior
+                override = self.edge_walls.get((z, x, y, side))
+                ws = override or (rt.walls if inside else self.exterior)
                 piece = side + kind
                 tiles.append(ws.tile(piece))
-                if inside and rt.detail:
+                if inside and rt.detail and not override:
                     tiles.append(DETAIL.tile(piece))
                 if kind == "DOOR":
-                    tiles.append(DOOR[side])
+                    tiles.append(self.door_tiles.get((z, x, y, side), DOOR[side]))
                 elif kind == "WIN":
                     tiles.append(WINDOW[side])
         if not n and not w:
