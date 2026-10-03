@@ -1,0 +1,14 @@
+version=1
+title=Naga City, Philippines
+description=Naga City, Camarines Sur, built from OpenStreetMap: its streets, rivers and buildings at one tile per metre.
+description=
+description=[list]
+description=[*][b]Where:[/b] south-east of Raven Creek. Take Raven Creek's long entry highway to its first gas station; the road south-east of the station leads to Naga.
+description=[*][b]What:[/b] the whole urban area, generated from OpenStreetMap data.
+description=[/list]
+description=
+description=Build 42 only. Requires Raven Creek B42. Must be installed on the server and on every client.
+description=
+description=Map data (c) OpenStreetMap contributors, available under the Open Database License (openstreetmap.org/copyright).
+tags=Build 42;Map;Multiplayer
+visibility=private

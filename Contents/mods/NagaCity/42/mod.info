@@ -1,0 +1,9 @@
+name=Naga City, Philippines
+id=NagaCity
+description=Naga City, Camarines Sur, built from OpenStreetMap: its streets, rivers and buildings at 1 tile per metre, south-east of Raven Creek. Requires Raven Creek. Map data (c) OpenStreetMap contributors, ODbL.
+author=Tien
+poster=poster.png
+icon=icon.png
+modversion=0.1.0
+category=Map
+require=\RavenCreekB42
