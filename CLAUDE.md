@@ -6,7 +6,67 @@ map folder in `common/media/maps/Naga City, PH/` (it must be under `common`, see
 the map files is `tools/` (Python, not uploaded). General engine findings go in
 `~/Zomboid/Workshop/ZomboidFixesB42/CLAUDE.md`; this file holds the reasoning behind this mod and the map formats.
 
-## Where we are (2026-10-04) — read this first
+## Phases and the road plan (2026-10-05) — read this first
+
+**Workflow (the user's):** the map is built in phases, each finished and frozen before the next; a finished phase is
+"the template we can always go back to when we generate buildings". Phase 1 = roads. Their output is
+`plan/roads.json` (tracked in git), the only source of the roads from then on: `generate.py` no longer reads OSM
+roads, and later phases (plots, buildings) must read the plan, never re-straighten. The user wants to help edit
+(an editor page over the OSM map was proposed and accepted, not built yet: drag points, rename / delete roads, notes).
+The user rejected leaving any jagged bit ("I hate these jagged stuff"; "doesn't look clean ... there's still like
+squares in here") — check every junction type square by square in iso renders before showing them.
+
+**Pipeline** (`tools/.venv/Scripts/python.exe tools/roadplan.py draft --force`, ~2 s; then `generate.py`, ~1 min):
+1. `netprep.py` (OSM ways, before straightening): drop `*_link` slip roads (12); roundabouts (18 groups,
+   `junction=roundabout|circular`, Naga Rotonda) become one junction node at the ring's centre (ids -1, -2...); split
+   carriageways (same name + class, one-way, opposite directions, within 30 m (20 unnamed) for 60 % of the way) keep the
+   eastbound / southbound side as a two-way road, side streets of the dropped side re-attached by projection; junction
+   clusters (junctions within 14 m along the roads, 281) become one node at their centre (ids -100001...), the road
+   bits between them cut.
+2. `roads.py` `schematize(..., lines=True)`: as before, plus each road's polyline (OSM node ids, None for bends) and
+   aliases for side-street junctions pinned onto highway routes.
+3. `roadplan.draft` turns that into the plan: nodes (OSM ids or `b<n>` bends, integer tiles), roads (one per highway
+   route / other OSM way: id, name, class, width, sidewalk, center_line, surface, osm, points), areas (plazas),
+   `connector_end` (Calabanga Road's north end). `roadplan.route(a, b)` joins two points: as is when straight / pure
+   45 degrees, else roads.py's straight / 45 / straight (hand-moved points). `roadplan.pieces` merges collinear runs.
+4. `roadtidy.py` (also `roadplan.py tidy` after hand edits): roads written as explicit octilinear vertices; repeatedly,
+   every run <= JOG (16) tiles that is not a hairpin is removed by the cheapest of: *shift* the neighbouring run across
+   (its far end sliding along the piece beyond), *meet* (extend the lines on either side to their intersection), or
+   *attach* (a road's end lets go of its junction and joins the crossing road where its own line meets it: two
+   diagonals stepping into one junction). Moves may turn another road's piece by <= 45 degrees if it stays octilinear
+   (`TURN_COST` 8). Dead-end roads <= STUB (16) dropped. Then `harmonize_widths`: same-class roads continuing straight
+   through a junction take the widest width / sidewalk (M. T. Villanueva 14 -> Penafrancia 10 made a step).
+   Current draft: 2,888 roads, 7,936 nodes, 440 km. Leftover short runs: ~80 Z, ~47 bends, mostly highway/service
+   tangles and parking loops (`tools/planview.py x0 y0 x1 y1 [scale]` draws the plan top-down, short runs in red).
+5. `generate.py` drawing rules (all to avoid notches): straight pieces end **flat** at their points (no square caps);
+   at every point, each two pieces at 90 / 135 degrees get a `Joint` (overlap of their endless strips = mitred corner)
+   and a `SidewalkJoint` per piece with a sidewalk (the sidewalk continues around the outside of the turn, limited to
+   the other piece's strip widened by its sidewalk: ends flush with a diagonal, square corners get their corner); a
+   piece ending on a road going straight through gets an `EndJoint` (carries on to the through road's far edge);
+   acute pairs (45 degrees) get nothing (their mitre sticks out behind the point). Coverage is tested per square
+   triangle (N/E/S/W centroids), so only full and half squares occur. Half squares show the surface they were laid
+   over (`under`: sidewalk, lower road, path, water) instead of grass. Sidewalks are no longer trimmed near diagonals;
+   scraps shorter than SIDEWALK_MIN (12) between crossing roads are dropped. Grass pockets enclosed by roads, <= 16
+   across, are paved (sidewalk if they touch sidewalk, else the asphalt around). Centre lines need >= 6 visible squares.
+   Cell margin M = 16 so scraps / pockets are judged the same from every cell. Uses scipy (`ndimage.label`).
+   Checked in iso at Penafrancia / Magsaysay / M. T. Villanueva (9180,18290), Mabolo / Roxas (8040,20210) and the
+   first test spot (9590,18990).
+
+**Street names (2026-10-05):** `generate.write_streets` writes `streets.xml` in the map folder from the plan's named
+roads (466 streets, 374 names; same-name roads meeting end to end joined). B42 reads `media/maps/<dir>/streets.xml`
+for every lot directory (`ISMapDefinitions` `initDefaultStreetData` for the world map's street labels;
+`IsoWorld.registerNavZones` from `metazoneHandler` on `OnLoadMapZones`), format in
+`zombie/worldMap/streets/WorldMapStreetsXML`: `<streets version="1"><street name width><points><point x y/>`.
+Each street also becomes a "Nav" zone (rects for straight pieces, a polyline zone for diagonal runs, `width` wide),
+where randomized vehicle stories spawn and road foraging applies; names containing a railroad word are skipped.
+Names are NFKC-folded (Santiago Ⅲ -> III, the map font has no Roman-numeral symbols); n-tilde kept.
+Unnamed roads get no street (the name is required) and so no Nav zone.
+
+**Next:** show the user the renders; then the editor page (Artifact with a shared db so edits come back to
+`plan/roads.json`; underlay = original OSM centre lines + water from data/naga.json; show the generator's tile result
+or at least road widths; notes pins for the user); then freeze phase 1 (commit "roads final").
+
+## Where we were (2026-10-04, buildings, paused for the road phase)
 
 **Direction (the user's, in order of how they arrived):**
 1. Roads the Zomboid way: cardinal / 45-degree, highways completely straight, nothing jagged anywhere (walks, drives,
@@ -57,7 +117,7 @@ order before trusting renders; the user is losing confidence ("I don't think we 
 for you") — verify every render square by square before sending. whiteboards / chalkboards (`location_business_office_generic_01_64..67`) carry no `attached*` flag,
 so they are not filtered (check their `Facing` property instead); a copied vanilla room smaller than the drawn room
 leaves space; branded signs need custom art (later); Ateneo still uses the procedural layout (`layout.py`) and should
-be redrawn with designs later; the NagaCity repo has **no commits yet** (offer one).
+be redrawn with designs later; the NagaCity repo has commits now (commit only when the user asks).
 
 ## Prefabs: copying whole vanilla buildings (2026-10-04, current approach)
 
@@ -369,8 +429,24 @@ From the 48_8 university (rooms classroom / universitylibrary / universityoffice
   single-room buildings, used by Ateneo v2); `tools/designs.py` + `tools/design_preview.py` (hand-drawn designs);
   `tools/pzmap/tiledefs.py` (wall-hung sprites); `tools/landmarks/` (`ateneo.py`, `merge.py`, `__init__.build_all`).
 - Renders for the user live in `tools/out/` (sent with SendUserFile; VS Code links also work).
+- Road phase (2026-10-05): `plan/roads.json` (the road plan, tracked); `tools/roadplan.py` (`draft [--force]`, `tidy`,
+  `check`; `load`, `save`, `route`, `pieces`, `polyline`, `PlanRoad`); `tools/netprep.py` (OSM network simplification);
+  `tools/roadtidy.py` (jag removal, width harmonising); `tools/planview.py x0 y0 x1 y1 [px per tile]` (top-down plan
+  drawing, short runs in red). generate.py now also writes `streets.xml`. Requirements: numpy, Pillow, shapely, scipy
+  (`tools/requirements.txt`; scipy installed into the venv 2026-10-05).
+- Checking a change against the previous map: copy the map folder first, regenerate, then compare lotpacks cell by
+  cell with `Cell.load` (counting and classifying changed squares) and render the spot with the most changes side by
+  side (`iso_preview.render(..., folder=old_copy)`). The plan rewrite was checked that way: identical centre-line
+  squares, only intended changes.
 
 ## Phases
+
+(Superseded for the working order by "Phases and the road plan" at the top: roads first, frozen, then the rest.)
+TIS tools: the user asked (2026-10-05) whether the result opens in TileZed / WorldEd: no, we write compiled lots,
+which those tools cannot import (they edit .tmx / .tbx / .pzw sources); an exporter to .pzw + per-cell .tmx is
+possible but would make buildings plain tiles and create two sources of truth; the tools are not installed here.
+SadPeanut/Pz-RealLifeMap (reviewed 2026-10-05) only paints OSM colour images for WorldEd (no straightening,
+simplify=False, no buildings, B41 300-tile cells); the user judged ours better.
 
 1. Skeleton (done).
 2. Writers: lotheader, lotpack, chunkdata, biome PNG, worldmap.xml (done).
@@ -384,6 +460,14 @@ From the 48_8 university (rooms classroom / universitylibrary / universityoffice
 7. Full run over the whole coverage; size check (each full lotpack ~1 MB; cells with nothing to write get no files).
 
 ## To verify
+
+- Road phase leftovers: `POCKET_AREA` (pave only junction pockets of <= ~30 squares, so real traffic islands between
+  roads stay grass) was written but the user stopped that run, so it is NOT in generate.py; pockets are limited by
+  span (16) only. ~80 Z / ~47 bend short runs remain in highway / service-road tangles (planview shows them). Not
+  checked in game yet: street names on the world map, whether the map font draws n-tilde, Nav-zone vehicle stories.
+- Viewing in game (told the user 2026-10-05): new game (an old save keeps its old chunks), mods Raven Creek B42 +
+  Naga City, spawn "Naga City, PH" (8475, 19482); test spots Penafrancia junction 9224,18332, Mabolo / Roxas corner
+  8092,20280, first diagonal T 9620,19016.
 
 - Phase 3 in game: the strip at x 6600..6655 paved (no trees), the connector drivable, worldgen ground beside roads,
   water tiles render, the in-game map shows Naga, the spawn region appears, no errors in console.txt.

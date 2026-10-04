@@ -5,6 +5,7 @@ import os
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(TOOLS, "data")
 OUT = os.path.join(TOOLS, "out")
+PLAN_DIR = os.path.join(TOOLS, "..", "plan")  # finished phases, tracked in git (roads.json: roadplan.py)
 
 MOD_ID = "NagaCity"
 MAP_NAME = "Naga City, PH"

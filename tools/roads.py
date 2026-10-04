@@ -20,7 +20,9 @@ Then the other roads, around the pinned junctions:
    45-degree part shorter than MIN_DIAG_PART, is a square corner (short diagonals and small offsets made "horrible
    formations", the user's second look).
 
-The result is a list of Piece: straight (H / V) or 45-degree (D) centre lines in integer tile coordinates."""
+The result is a list of Piece: straight (H / V) or 45-degree (D) centre lines in integer tile coordinates. With
+`lines=True` it also gives each road as one polyline of (OSM node id or None for a bend, point), the first draft of
+the road plan (roadplan.py)."""
 import math
 from collections import Counter, defaultdict
 
@@ -203,8 +205,38 @@ def _point_along(path, frac):
     return path[-1][1]
 
 
-def schematize(roads):
-    """roads: osm.Road list (line roads with node ids). Returns (pieces, final node positions {id: (x, y)})."""
+def _bends(path):
+    """The inner corners of a _path result (its pieces without zero-length ones)."""
+    return [q for p, q in path[:-1]]
+
+
+def _insert(line, node, pt):
+    """Put an OSM node lying on a polyline of (id, point) into it: on a vertex without an id it names it, else it is
+    inserted into the piece that holds it. Returns the id the node ends up under (an earlier node at the same point
+    keeps its own)."""
+    for k, (n, q) in enumerate(line):
+        if q == pt:
+            if n is None:
+                line[k] = (node, q)
+                return node
+            return n
+    for k in range(len(line) - 1):
+        (ax, ay), (bx, by) = line[k][1], line[k + 1][1]
+        dx, dy = bx - ax, by - ay
+        steps = max(abs(dx), abs(dy))
+        if steps == 0:
+            continue
+        sx, sy = (dx > 0) - (dx < 0), (dy > 0) - (dy < 0)
+        t = max(abs(pt[0] - ax), abs(pt[1] - ay))
+        if 0 < t < steps and (ax + sx * t, ay + sy * t) == pt:
+            line.insert(k + 1, (node, pt))
+            return node
+    raise ValueError("node %s at %s is not on its route" % (node, pt))
+
+
+def schematize(roads, lines=False):
+    """roads: osm.Road list (line roads with node ids). Returns (pieces, final node positions {id: (x, y)}), plus
+    (road index, [(node id | None, point)]) per road and {node id: id it was merged into} with `lines`."""
     pos, use = {}, Counter()
     for r in roads:
         for n, p in zip(r.nodes, r.line.coords):
@@ -218,8 +250,8 @@ def schematize(roads):
     routes = _stitch(roads, hw)
     on_routes = Counter(n for chain, _ in routes for n in set(chain))
     forced = {n for n, c in on_routes.items() if c >= 2}
-    legs = []  # (a, b, road index, route nodes from a to b)
-    for chain, i in routes:
+    legs = []  # (a, b, road index, route nodes from a to b, route number)
+    for route_no, (chain, i) in enumerate(routes):
         chain = [n for k, n in enumerate(chain) if k == 0 or n != chain[k - 1]]
         if len(chain) < 2:
             continue
@@ -228,12 +260,12 @@ def schematize(roads):
         for a, b in zip(kept, kept[1:]):
             start = chain.index(a, at)
             end = chain.index(b, start + 1) if b in chain[start + 1:] else start
-            legs.append((a, b, i, chain[start:end + 1]))
+            legs.append((a, b, i, chain[start:end + 1], route_no))
             at = end
     hx, hy = _Groups(xs), _Groups(ys)
     hwx, hwy = defaultdict(float), defaultdict(float)
     leg_kind = []
-    for a, b, i, _ in legs:
+    for a, b, i, _, _ in legs:
         k = _kind(pos[a], pos[b], HW_AXIS_DEG)
         leg_kind.append(k)
         w = math.dist(pos[a], pos[b]) * roads[i].width
@@ -247,11 +279,15 @@ def schematize(roads):
             hwx[b] += w
     fx, fy = _resolve(hx, xs, hwx), _resolve(hy, ys, hwy)
     pinned, pieces = {}, []
-    for (a, b, i, nodes), k in zip(legs, leg_kind):
+    route_lines = {}  # route number -> (road index, [(id, point)])
+    along = []  # (route number, node, point): side-street junctions pinned onto a route
+    for (a, b, i, nodes, route_no), k in zip(legs, leg_kind):
         A, B = (fx[a], fy[a]), (fx[b], fy[b])
         pinned[a], pinned[b] = A, B
         path = [(p, q) for p, q in _path(A, B, k) if p != q]
         pieces += [Piece(p, q, i) for p, q in path]
+        line = route_lines.setdefault(route_no, (i, [(a, A)]))[1]
+        line += [(None, q) for q in _bends(path)] + [(b, B)]
         if len(nodes) > 2 and path:
             cum = [0.0]
             for p, q in zip(nodes, nodes[1:]):
@@ -259,6 +295,7 @@ def schematize(roads):
             for n, c in zip(nodes[1:-1], cum[1:-1]):
                 if use[n] >= 2 and n not in pinned:
                     pinned[n] = _point_along(path, c / cum[-1] if cum[-1] else 0)
+                    along.append((route_no, n, pinned[n]))
 
     # The other roads, around the pinned junctions.
     others = [i for i, r in enumerate(roads) if RANK.get(r.cls, 3) < HIGHWAY_RANK]
@@ -318,9 +355,23 @@ def schematize(roads):
         fx, fy = _resolve(gx, px, wx), _resolve(gy, py, wy)
     final = {n: (fx[n], fy[n]) for n in pos}
     final.update(pinned)
+    other_lines = {}
     for s, (a, b, i) in enumerate(segments):
-        pieces += [Piece(p, q, i) for p, q in _path(final[a], final[b], kind[s]) if p != q]
-    return pieces, final
+        path = [(p, q) for p, q in _path(final[a], final[b], kind[s]) if p != q]
+        pieces += [Piece(p, q, i) for p, q in path]
+        line = other_lines.setdefault(i, [(a, final[a])])
+        if line[-1][0] != a:
+            raise ValueError("road %d: segments are not consecutive" % i)
+        line += [(None, q) for q in _bends(path)] + [(b, final[b])]
+    if not lines:
+        return pieces, final
+    alias = {}
+    for route_no, n, pt in along:
+        got = _insert(route_lines[route_no][1], n, pt)
+        if got != n:
+            alias[n] = got
+    out = [(i, line) for i, line in route_lines.values()] + [(i, line) for i, line in other_lines.items()]
+    return pieces, final, out, alias
 
 
 def _path(a, b, k):
